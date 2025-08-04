@@ -37,6 +37,7 @@ fn main() {
 
     let _asdserver_thread = thread::spawn(|| {
         let rt = Builder::new_multi_thread()
+            .enable_all()
             .worker_threads(4)
             .build()
             .unwrap();

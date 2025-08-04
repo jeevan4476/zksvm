@@ -154,16 +154,23 @@ pub fn run(
         //     .unwrap();
 
         // Call settle if transaction amount since last settle hits 10
-        if tx_counter >= 10 {
-            // Lock db to avoid state changes during settlement
+        if tx_counter >= 2 {
+            // TODO Lock db to avoid state changes during settlement
 
-            // Prepare root hash, or your own proof to send to chain
+            // TODO Prepare root hash, or your own proof to send to chain
 
             // Send proof to chain
-            println!("settle to L1...");
+            println!("SETTLE to L1...");
             let message = b"my rollup state proof or commitment";
             let message_hash = hash(message);
-            let _settle_tx_hash = settle_state(message_hash.into());
+
+            // ✅ Spawn an async task
+            tokio::spawn(async move {
+                match settle_state(message_hash.into()).await {
+                    Ok(hash) => log::info!("Settle hash: {}", hash),
+                    Err(e) => log::error!("Settle failed: {:?}", e),
+                }
+            });
             tx_counter = 0u32;
         }
     }
