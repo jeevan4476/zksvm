@@ -12,7 +12,6 @@ use std::{
 
 use crate::frontend::FrontendMessage;
 
-#[derive(Serialize, Deserialize)]
 pub struct RollupDBMessage {
     pub lock_accounts: Option<Vec<Pubkey>>,
     pub add_processed_transaction: Option<Transaction>,
@@ -20,7 +19,7 @@ pub struct RollupDBMessage {
     pub add_settle_proof: Option<String>,
 }
 
-#[derive(Serialize, Debug, Default)]
+#[derive(Debug, Default)]
 pub struct RollupDB {
     accounts_db: HashMap<Pubkey, AccountSharedData>,
     locked_accounts: HashMap<Pubkey, AccountSharedData>,
@@ -39,24 +38,52 @@ impl RollupDB {
         };
 
         while let Ok(message) = rollup_db_receiver.recv() {
-            if let Some(accounts_to_lock) = message.lock_accounts {
-                // Lock accounts, by removing them from the accounts_db hashmap, and adding them to locked accounts
-                let _ = accounts_to_lock.iter().map(|pubkey| {
-                    db.locked_accounts
-                        .insert(pubkey.clone(), db.accounts_db.remove(pubkey).unwrap())
-                });
-            } else if let Some(get_this_hash_tx) = message.frontend_get_tx {
-                let req_tx = db.transactions.get(&get_this_hash_tx).unwrap();
+            log::info!("got MMESSAGE");
+            log::info!("GETTX: {:?}", message.frontend_get_tx);
+            log::info!("LOCKOUTS: {:?}", message.lock_accounts);
+            log::info!("ADDPROCESSEDTX: {:?}", message.add_processed_transaction);
 
-                frontend_sender
-                    .send(FrontendMessage {
-                        transaction: Some(req_tx.clone()),
-                        get_tx: None,
-                    })
-                    .await
-                    .unwrap();
-            } else if let Some(tx) = message.add_processed_transaction {
+            // ✅ verwerk lock_accounts indien aanwezig
+            if let Some(accounts_to_lock) = &message.lock_accounts {
+                log::info!("got LOCKUP ACCOUNTS");
+                for pubkey in accounts_to_lock {
+                    if let Some(account) = db.accounts_db.remove(pubkey) {
+                        db.locked_accounts.insert(*pubkey, account);
+                    }
+                }
+            }
+
+            // ✅ verwerk add_processed_transaction indien aanwezig
+            if let Some(tx) = &message.add_processed_transaction {
+                log::info!("ADD ROLLUPDB tx");
+                let hash = tx.signatures[0];
+                log::info!("signature: {}", hash);
+                let tx_hash = solana_sdk::keccak::hashv(&[hash.as_ref()]);
+                log::info!("txhash: {}", tx_hash);
+                db.transactions.insert(tx_hash, tx.clone());
+                log::info!("INSERTED TX IN DB");
+            }
+
+            // ✅ verwerk frontend_get_tx indien aanwezig
+            if let Some(get_this_hash_tx) = &message.frontend_get_tx {
+                log::info!("got get tx hash api");
+
+                match db.transactions.get(get_this_hash_tx) {
+                    Some(req_tx) => {
+                        frontend_sender
+                            .send(FrontendMessage {
+                                transaction: Some(req_tx.clone()),
+                                get_tx: None,
+                            })
+                            .await
+                            .unwrap();
+                    }
+                    None => {
+                        log::warn!("No transaction found for hash: {}", get_this_hash_tx);
+                    }
+                }
             }
         }
     }
 }
+
