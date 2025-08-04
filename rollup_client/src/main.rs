@@ -75,17 +75,22 @@ async fn main() -> Result<()> {
     // .await?;
 
     println!("{submit_transaction:#?}");
-    let tx_hash = hash(&bincode::serialize(&rtx.sol_transaction)?);
+    println!("TX: {:?}", rtx.sol_transaction);
 
-    println!("{:#?}", tx_hash.clone());
+   let tx_sig = rtx.sol_transaction.signatures[0].to_string();
+    let sig_hash_b58 = solana_sdk::keccak::hashv(&[tx_sig.as_bytes()]).to_string();
+    println!("Sig: {}", tx_sig);
+    println!("Sig_hash: {:#?}", sig_hash_b58);
+
+    // println!("{:#?}", tx_hash.clone());
 
     println!("Getting transaction...");
     let tx_resp = client
         .post("http://127.0.0.1:8080/get_transaction")
-        .json(&HashMap::from([("get_tx", tx_hash.to_string())]))
+        .json(&HashMap::from([("get_tx", sig_hash_b58)]))
         .send()
         .await?
-        .json::<HashMap<String, String>>()
+        .json::<RollupTransaction>()
         .await?;
 
     println!("{tx_resp:#?}");

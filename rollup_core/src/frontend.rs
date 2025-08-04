@@ -58,8 +58,9 @@ pub async fn get_transaction(
     log::info!("Requested transaction");
     log::info!("{body:?}");
     log::info!("ADD ROLLUPDB tx");
-    let hash = body.get_tx
-    let tx_hash = solana_sdk::keccak::hashv(&[hash.as_ref()]);
+    let sig = body.get_tx.clone();
+    log::info!("FRONTEND TX: {}", sig);
+  
 
     rollupdb_sender
         .send(RollupDBMessage {

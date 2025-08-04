@@ -56,20 +56,23 @@ impl RollupDB {
             // ✅ verwerk add_processed_transaction indien aanwezig
             if let Some(tx) = &message.add_processed_transaction {
                 log::info!("ADD ROLLUPDB tx");
-                let hash = tx.signatures[0];
-                log::info!("signature: {}", hash);
-                let tx_hash = solana_sdk::keccak::hashv(&[hash.as_ref()]);
+                let sig = tx.signatures[0].to_string();
+                log::info!("Signatures: {:?}", tx.signatures);
+                log::info!("signature: {}", sig);
+                let tx_hash = solana_sdk::keccak::hashv(&[sig.as_bytes()]);
                 log::info!("txhash: {}", tx_hash);
                 db.transactions.insert(tx_hash, tx.clone());
                 log::info!("INSERTED TX IN DB");
-            }
 
+                log::info!("DB: {:?}", db)
+            }
             // ✅ verwerk frontend_get_tx indien aanwezig
             if let Some(get_this_hash_tx) = &message.frontend_get_tx {
                 log::info!("got get tx hash api");
 
                 match db.transactions.get(get_this_hash_tx) {
                     Some(req_tx) => {
+                        log::info!("✅ Found transaction for hash: {}", get_this_hash_tx);
                         frontend_sender
                             .send(FrontendMessage {
                                 transaction: Some(req_tx.clone()),
@@ -79,11 +82,10 @@ impl RollupDB {
                             .unwrap();
                     }
                     None => {
-                        log::warn!("No transaction found for hash: {}", get_this_hash_tx);
+                        log::warn!("⚠️ No transaction found for hash: {}", get_this_hash_tx);
                     }
                 }
             }
         }
     }
 }
-
