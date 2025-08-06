@@ -3,6 +3,7 @@ use bincode;
 use serde::{Deserialize, Serialize};
 use solana_client::nonblocking::rpc_client::{self, RpcClient};
 use solana_sdk::{
+    hash::hash,
     instruction::Instruction,
     keccak::{Hash, Hasher},
     native_token::LAMPORTS_PER_SOL,
@@ -47,6 +48,7 @@ async fn main() -> Result<()> {
 
     // let tx_encoded: Transaction = tx.try_into().unwrap();
 
+    println!("starting test response...");
     let test_response = client
         .get("http://127.0.0.1:8080")
         .send()
@@ -63,6 +65,7 @@ async fn main() -> Result<()> {
 
     // let serialized_rollup_transaction = serde_json::to_string(&rtx)?;
 
+    println!("Submitting transaction...");
     let submit_transaction = client
         .post("http://127.0.0.1:8080/submit_transaction")
         .json(&rtx)
@@ -72,17 +75,22 @@ async fn main() -> Result<()> {
     // .await?;
 
     println!("{submit_transaction:#?}");
-    let mut hasher = Hasher::default();
-    hasher.hash(bincode::serialize(&rtx.sol_transaction).unwrap().as_slice());
+    println!("TX: {:?}", rtx.sol_transaction);
 
-    println!("{:#?}", hasher.clone().result());
+   let tx_sig = rtx.sol_transaction.signatures[0].to_string();
+    let sig_hash_b58 = solana_sdk::keccak::hashv(&[tx_sig.as_bytes()]).to_string();
+    println!("Sig: {}", tx_sig);
+    println!("Sig_hash: {:#?}", sig_hash_b58);
 
+    // println!("{:#?}", tx_hash.clone());
+
+    println!("Getting transaction...");
     let tx_resp = client
         .post("http://127.0.0.1:8080/get_transaction")
-        .json(&HashMap::from([("get_tx", hasher.result().to_string())]))
+        .json(&HashMap::from([("get_tx", sig_hash_b58)]))
         .send()
         .await?
-        .json::<HashMap<String, String>>()
+        .json::<RollupTransaction>()
         .await?;
 
     println!("{tx_resp:#?}");
