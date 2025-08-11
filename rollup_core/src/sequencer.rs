@@ -48,79 +48,189 @@ use crate::{
     settle::settle_state,
 };
 
+
+
+fn process_transaction_batch(
+    transaction_batch : &[Transaction],
+    rollup_account_loader : &RollupAccountLoader,
+    rollupdb_sender: &CBSender<RollupDBMessage>
+)->Result<()>{
+    let compute_budget = SVMTransactionExecutionBudget::default();
+    let feature_set = SVMFeatureSet::all_enabled();
+    let fee_structure = FeeStructure::default();
+    let rent_collector = RentCollector::default();
+    let fork_graph = Arc::new(RwLock::new(RollupForkGraph {}));
+
+    let processor = create_transaction_batch_processor(
+        rollup_account_loader,
+        &feature_set,
+        &compute_budget,
+        Arc::clone(&fork_graph),
+    );
+
+    let processing_environment = TransactionProcessingEnvironment {
+        blockhash: Hash::default(),
+        blockhash_lamports_per_signature: fee_structure.lamports_per_signature,
+        epoch_total_stake: 0,
+        feature_set,
+        rent_collector: Some(&rent_collector),
+    };
+
+    let processing_config = TransactionProcessingConfig::default();
+
+    let sanitized_txs: Vec<SanitizedTransaction> = transaction_batch
+        .iter()
+        .map(|tx| SanitizedTransaction::try_from_legacy_transaction(tx.clone(), &HashSet::new()).unwrap())
+        .collect();
+
+    println!("Loading and executing a batch of sanitized transactions...");
+    let results = processor.load_and_execute_sanitized_transactions(
+        rollup_account_loader,
+        &sanitized_txs,
+        get_transaction_check_results(sanitized_txs.len()),
+        &processing_environment,
+        &processing_config,
+    );
+
+    // Lock accounts for the entire batch
+    let accounts_to_lock: Vec<Pubkey> = transaction_batch
+        .iter()
+        .flat_map(|tx| tx.message.account_keys.clone())
+        .collect();
+
+    // Send the entire batch of processed transactions to RollupDB
+    for tx in transaction_batch {
+        rollupdb_sender
+            .send(RollupDBMessage {
+                lock_accounts: Some(accounts_to_lock.clone()),
+                frontend_get_tx: None,
+                add_settle_proof: None,
+                add_processed_transaction: Some(tx.clone()),
+            })
+            .map_err(|_| anyhow!("failed to send message to rollupdb"))?;
+    }
+
+    Ok(())
+}
+
+
 pub fn run(
     sequencer_receiver_channel: CBReceiver<Transaction>,
     rollupdb_sender: CBSender<RollupDBMessage>,
 ) -> Result<()> {
     let mut tx_counter = 0u32;
 
+    let batch_size = 3;
+    let mut transaction_batch : Vec<Transaction> = Vec::with_capacity(batch_size);
     let rpc_client_temp = RpcClient::new("https://api.devnet.solana.com".to_string());
 
     println!("Sequencer is running...");
     let rollup_account_loader = RollupAccountLoader::new(&rpc_client_temp);
 
-    while let transaction = sequencer_receiver_channel.recv().unwrap() {
-        let accounts_to_lock = transaction.message.account_keys.clone();
-        tx_counter += 1;
+    while let Ok(transaction) = sequencer_receiver_channel.recv() {
 
-        println!("send lock accounts to rollupdb");
-        // lock accounts in rollupdb to keep paralell execution possible, just like on solana
-        rollupdb_sender
-            .send(RollupDBMessage {
-                lock_accounts: Some(accounts_to_lock),
-                frontend_get_tx: None,
-                add_settle_proof: None,
-                add_processed_transaction: Some(transaction.clone()),
-            })
-            .map_err(|_| anyhow!("failed to send message to rollupdb"))?;
+        transaction_batch.push(transaction);
 
-        // Verify ransaction signatures, integrity
+        if transaction_batch.len() >= batch_size {
+            println!("processing a batch of {} transaction", transaction_batch.len());
 
-        // Process transaction
+            process_transaction_batch(
+                &transaction_batch,
+                &rollup_account_loader,
+                &rollupdb_sender
+            )?;
 
-        let compute_budget = SVMTransactionExecutionBudget::default();
-        let feature_set = SVMFeatureSet::all_enabled();
-        let fee_structure = FeeStructure::default();
-        let rent_collector = RentCollector::default();
+            tx_counter+=transaction_batch.len() as u32;
+
+            transaction_batch.clear();
+
+            if tx_counter >= 2 {
+            // TODO Lock db to avoid state changes during settlement
+
+            // TODO Prepare root hash, or your own proof to send to chain
+
+            // Send proof to chain
+            println!("SETTLE to L1...");
+            let message = b"my rollup state proof or commitment";
+            let message_hash = hash(message);
+
+            // ✅ Spawn an async task
+            tokio::spawn(async move {
+                match settle_state(message_hash.into()).await {
+                    Ok(hash) => log::info!("Settle hash: {}", hash),
+                    Err(e) => log::error!("Settle failed: {:?}", e),
+                }
+            });
+            tx_counter = 0u32;
+        }
+        }
+    }
+    Ok(())
+
+
+
+
+        // let accounts_to_lock = transaction.message.account_keys.clone();
+        // tx_counter += 1;
+
+        // println!("send lock accounts to rollupdb");
+        // // lock accounts in rollupdb to keep paralell execution possible, just like on solana
+        // rollupdb_sender
+        //     .send(RollupDBMessage {
+        //         lock_accounts: Some(accounts_to_lock),
+        //         frontend_get_tx: None,
+        //         add_settle_proof: None,
+        //         add_processed_transaction: Some(transaction.clone()),
+        //     })
+        //     .map_err(|_| anyhow!("failed to send message to rollupdb"))?;
+
+        // // Verify ransaction signatures, integrity
+
+        // // Process transaction
+
+        // let compute_budget = SVMTransactionExecutionBudget::default();
+        // let feature_set = SVMFeatureSet::all_enabled();
+        // let fee_structure = FeeStructure::default();
         // let rent_collector = RentCollector::default();
+        // // let rent_collector = RentCollector::default();
 
-        // Solana runtime.
-        let fork_graph = Arc::new(RwLock::new(RollupForkGraph {}));
+        // // Solana runtime.
+        // let fork_graph = Arc::new(RwLock::new(RollupForkGraph {}));
 
-        println!("Create batch transactions...");
-        // // create transaction processor, add accounts and programs, builtins,
-        let processor = create_transaction_batch_processor(
-            &rollup_account_loader,
-            &feature_set,
-            &compute_budget,
-            Arc::clone(&fork_graph),
-        );
+        // println!("Create batch transactions...");
+        // // // create transaction processor, add accounts and programs, builtins,
+        // let processor = create_transaction_batch_processor(
+        //     &rollup_account_loader,
+        //     &feature_set,
+        //     &compute_budget,
+        //     Arc::clone(&fork_graph),
+        // );
 
-        let processing_environment = TransactionProcessingEnvironment {
-            blockhash: Hash::default(),
-            blockhash_lamports_per_signature: fee_structure.lamports_per_signature,
-            epoch_total_stake: 0,
-            feature_set,
-            rent_collector: Some(&rent_collector),
-        };
+        // let processing_environment = TransactionProcessingEnvironment {
+        //     blockhash: Hash::default(),
+        //     blockhash_lamports_per_signature: fee_structure.lamports_per_signature,
+        //     epoch_total_stake: 0,
+        //     feature_set,
+        //     rent_collector: Some(&rent_collector),
+        // };
 
-        let processing_config = TransactionProcessingConfig::default();
+        // let processing_config = TransactionProcessingConfig::default();
 
-        let sanitized = SanitizedTransaction::try_from_legacy_transaction(
-            Transaction::from(transaction.clone()),
-            &HashSet::new(),
-        );
+        // let sanitized = SanitizedTransaction::try_from_legacy_transaction(
+        //     Transaction::from(transaction.clone()),
+        //     &HashSet::new(),
+        // );
 
-        let sanitized_txs = &[sanitized.unwrap()];
+        // let sanitized_txs = &[sanitized.unwrap()];
 
-        println!("load and execute...");
-        let results = processor.load_and_execute_sanitized_transactions(
-            &rollup_account_loader,
-            sanitized_txs,
-            get_transaction_check_results(1),
-            &processing_environment,
-            &processing_config,
-        );
+        // println!("load and execute...");
+        // let results = processor.load_and_execute_sanitized_transactions(
+        //     &rollup_account_loader,
+        //     sanitized_txs,
+        //     get_transaction_check_results(1),
+        //     &processing_environment,
+        //     &processing_config,
+        // );
 
         // let mut cache = processor.program_cache.write().unwrap();
 
@@ -154,28 +264,28 @@ pub fn run(
         //     .unwrap();
 
         // Call settle if transaction amount since last settle hits 10
-        if tx_counter >= 2 {
-            // TODO Lock db to avoid state changes during settlement
+    //     if tx_counter >= 2 {
+    //         // TODO Lock db to avoid state changes during settlement
 
-            // TODO Prepare root hash, or your own proof to send to chain
+    //         // TODO Prepare root hash, or your own proof to send to chain
 
-            // Send proof to chain
-            println!("SETTLE to L1...");
-            let message = b"my rollup state proof or commitment";
-            let message_hash = hash(message);
+    //         // Send proof to chain
+    //         println!("SETTLE to L1...");
+    //         let message = b"my rollup state proof or commitment";
+    //         let message_hash = hash(message);
 
-            // ✅ Spawn an async task
-            tokio::spawn(async move {
-                match settle_state(message_hash.into()).await {
-                    Ok(hash) => log::info!("Settle hash: {}", hash),
-                    Err(e) => log::error!("Settle failed: {:?}", e),
-                }
-            });
-            tx_counter = 0u32;
-        }
-    }
+    //         // ✅ Spawn an async task
+    //         tokio::spawn(async move {
+    //             match settle_state(message_hash.into()).await {
+    //                 Ok(hash) => log::info!("Settle hash: {}", hash),
+    //                 Err(e) => log::error!("Settle failed: {:?}", e),
+    //             }
+    //         });
+    //         tx_counter = 0u32;
+    //     }
+    // }
 
-    Ok(())
+    // Ok(())
 }
 
 pub struct RollupAccountLoader<'a> {

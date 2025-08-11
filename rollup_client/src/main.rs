@@ -7,7 +7,7 @@ use solana_sdk::{
     instruction::Instruction,
     keccak::{Hash, Hasher},
     native_token::LAMPORTS_PER_SOL,
-    signature::Signature,
+    signature::{Keypair, Signature},
     signer::{self, Signer},
     system_instruction, system_program,
     transaction::Transaction,
@@ -29,8 +29,10 @@ pub struct GetTransaction {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let keypair = signer::keypair::read_keypair_file("/home/dev/.solana/testkey.json").unwrap();
-    let keypair2 = signer::keypair::read_keypair_file("/home/dev/.solana/mykey_1.json").unwrap();
+    // let keypair = signer::keypair::read_keypair_file("/home/dev/.solana/testkey.json").unwrap();
+    // let keypair2 = signer::keypair::read_keypair_file("/home/dev/.solana/mykey_1.json").unwrap();
+    let keypair = Keypair::new();
+    let keypair2 = Keypair::new();
     let rpc_client = RpcClient::new("https://api.devnet.solana.com".into());
 
     let ix =
@@ -77,23 +79,23 @@ async fn main() -> Result<()> {
     println!("{submit_transaction:#?}");
     println!("TX: {:?}", rtx.sol_transaction);
 
-   let tx_sig = rtx.sol_transaction.signatures[0].to_string();
-    let sig_hash_b58 = solana_sdk::keccak::hashv(&[tx_sig.as_bytes()]).to_string();
-    println!("Sig: {}", tx_sig);
-    println!("Sig_hash: {:#?}", sig_hash_b58);
+//    let tx_sig = rtx.sol_transaction.signatures[0].to_string();
+//     let sig_hash_b58 = solana_sdk::keccak::hashv(&[tx_sig.as_bytes()]).to_string();
+//     println!("Sig: {}", tx_sig);
+//     println!("Sig_hash: {:#?}", sig_hash_b58);
 
     // println!("{:#?}", tx_hash.clone());
 
-    println!("Getting transaction...");
-    let tx_resp = client
-        .post("http://127.0.0.1:8080/get_transaction")
-        .json(&HashMap::from([("get_tx", sig_hash_b58)]))
-        .send()
-        .await?
-        .json::<RollupTransaction>()
-        .await?;
+    // println!("Getting transaction...");
+    // let tx_resp = client
+    //     .post("http://127.0.0.1:8080/get_transaction")
+    //     .json(&HashMap::from([("get_tx", sig_hash_b58)]))
+    //     .send()
+    //     .await?
+    //     .json::<RollupTransaction>()
+    //     .await?;
 
-    println!("{tx_resp:#?}");
+    // println!("{tx_resp:#?}");
 
     Ok(())
 }
