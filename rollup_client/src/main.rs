@@ -1,31 +1,7 @@
 use anyhow::Result;
-use bincode;
-use serde::{Deserialize, Serialize};
-use solana_client::nonblocking::rpc_client::{self, RpcClient};
-use solana_sdk::{
-    hash::hash,
-    instruction::Instruction,
-    keccak::{Hash, Hasher},
-    native_token::LAMPORTS_PER_SOL,
-    signature::Signature,
-    signer::{self, Signer},
-    system_instruction, system_program,
-    transaction::Transaction,
-};
-use solana_transaction_status::UiTransactionEncoding::{self, Binary};
-use std::{collections::HashMap, str::FromStr};
-// use serde_json;
-
-#[derive(Serialize, Deserialize, Debug)]
-struct RollupTransaction {
-    sender: String,
-    sol_transaction: Transaction,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-pub struct GetTransaction {
-    pub get_tx: String,
-}
+use rollup_client::{calculate_signature_hash, create_solana_transaction, RollupClient};
+use solana_client::nonblocking::rpc_client::RpcClient;
+use solana_sdk::{native_token::LAMPORTS_PER_SOL, signer};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -33,66 +9,31 @@ async fn main() -> Result<()> {
     let keypair2 = signer::keypair::read_keypair_file("/home/dev/.solana/mykey_1.json").unwrap();
     let rpc_client = RpcClient::new("https://api.devnet.solana.com".into());
 
-    let ix =
-        system_instruction::transfer(&keypair2.pubkey(), &keypair.pubkey(), 1 * LAMPORTS_PER_SOL);
-    let tx = Transaction::new_signed_with_payer(
-        &[ix],
-        Some(&keypair2.pubkey()),
-        &[&keypair2],
-        rpc_client.get_latest_blockhash().await.unwrap(),
-    );
+    // Get recent blockhash from Solana
+    let recent_blockhash = rpc_client.get_latest_blockhash().await.unwrap();
 
-    // let sig = Signature::from_str("3ENa2e9TG6stDNkUZkRcC2Gf5saNMUFhpptQiNg56nGJ9eRBgSJpZBi7WLP5ev7aggG1JAXQWzBk8Xfkjcx1YCM2").unwrap();
-    // let tx = rpc_client.get_transaction(&sig, UiTransactionEncoding::Binary).await.unwrap();
-    let client = reqwest::Client::new();
+    // Create transaction using the library function
+    let tx = create_solana_transaction(&keypair2, &keypair, 1 * LAMPORTS_PER_SOL, recent_blockhash);
 
-    // let tx_encoded: Transaction = tx.try_into().unwrap();
+    // Create rollup client
+    let rollup_client = RollupClient::new("http://127.0.0.1:8080".to_string());
 
     println!("starting test response...");
-    let test_response = client
-        .get("http://127.0.0.1:8080")
-        .send()
-        .await?
-        .json::<HashMap<String, String>>()
-        .await?;
-
+    let test_response = rollup_client.health_check().await?;
     println!("{test_response:#?}");
 
-    let rtx = RollupTransaction {
-        sender: "Me".into(),
-        sol_transaction: tx,
-    };
-
-    // let serialized_rollup_transaction = serde_json::to_string(&rtx)?;
-
     println!("Submitting transaction...");
-    let submit_transaction = client
-        .post("http://127.0.0.1:8080/submit_transaction")
-        .json(&rtx)
-        .send()
-        .await?;
-    // .json()
-    // .await?;
+    let submit_response = rollup_client.submit_transaction("Me", tx.clone()).await?;
+    println!("{submit_response:#?}");
+    println!("TX: {:?}", tx);
 
-    println!("{submit_transaction:#?}");
-    println!("TX: {:?}", rtx.sol_transaction);
-
-   let tx_sig = rtx.sol_transaction.signatures[0].to_string();
-    let sig_hash_b58 = solana_sdk::keccak::hashv(&[tx_sig.as_bytes()]).to_string();
+    let tx_sig = tx.signatures[0].to_string();
+    let sig_hash_b58 = calculate_signature_hash(&tx_sig);
     println!("Sig: {}", tx_sig);
     println!("Sig_hash: {:#?}", sig_hash_b58);
 
-    // println!("{:#?}", tx_hash.clone());
-
     println!("Getting transaction...");
-    let tx_resp = client
-        .post("http://127.0.0.1:8080/get_transaction")
-        .json(&HashMap::from([("get_tx", sig_hash_b58)]))
-        .send()
-        .await?
-        .json::<RollupTransaction>()
-        .await?;
-
+    let tx_resp = rollup_client.get_transaction(&sig_hash_b58).await?;
     println!("{tx_resp:#?}");
 
     Ok(())
