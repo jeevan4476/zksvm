@@ -29,10 +29,9 @@ pub struct GetTransaction {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // let keypair = signer::keypair::read_keypair_file("/home/dev/.solana/testkey.json").unwrap();
-    // let keypair2 = signer::keypair::read_keypair_file("/home/dev/.solana/mykey_1.json").unwrap();
-    let keypair = Keypair::new();
-    let keypair2 = Keypair::new();
+    let keypair = signer::keypair::read_keypair_file("/home/jvan/.solana/testkey.json").unwrap();
+    let keypair2 = signer::keypair::read_keypair_file("/home/jvan/.solana/mykey_1.json").unwrap();
+    
     let rpc_client = RpcClient::new("https://api.devnet.solana.com".into());
 
     let ix =
