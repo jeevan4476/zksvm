@@ -70,6 +70,7 @@ pub async fn get_transaction(
                 Hash::from_str(&body.get_tx).map_err(|_| error::ErrorBadRequest("Invalid hash"))?,
             ),
             add_settle_proof: None,
+            add_new_data:None
         })
         .unwrap();
     log::info!("Sending to rollupdb worked getrequest");
