@@ -8,16 +8,12 @@ use tokio::time::{sleep, Duration};
 #[tokio::main]
 async fn main() -> Result<()> {
     dotenv().ok();
-    // let keypair = signer::keypair::read_keypair_file("/home/jvan/.solana/testkey.json").unwrap();
-    // let keypair2 = signer::keypair::read_keypair_file("/home/jvan/.solana/mykey_1.json").unwrap();
-    let env_keypair = std::env::var("KEYPAIR1")?;
-    let env_keypair2 = std::env::var("KEYPAIR2")?;
+    let path1 = std::env::var("KEYPAIR1")?;
+    let path2 = std::env::var("KEYPAIR2")?;
 
-    let bytes1: Vec<u8> = serde_json::from_str(&env_keypair)?;
-    let keypair = Keypair::try_from(&bytes1[..])?;
-    
-    let bytes2: Vec<u8> = serde_json::from_str(&env_keypair2)?;
-    let keypair2 = Keypair::try_from(&bytes2[..])?;
+    let keypair = signer::keypair::read_keypair_file(path1).unwrap();
+    let keypair2 = signer::keypair::read_keypair_file(path2).unwrap();
+
 
     let rpc_client = RpcClient::new("https://api.devnet.solana.com".into());
 
