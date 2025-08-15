@@ -1,30 +1,29 @@
 use anyhow::Result;
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::{
-    blake3::Hash,
+    hash::Hash,
     commitment_config::CommitmentConfig,
     instruction::{AccountMeta, Instruction},
     pubkey::Pubkey,
-    signature::{Keypair, Signer},
+    signature::{ Signer},
     signer,
+    signer::keypair::Keypair,
     system_program,
     transaction::Transaction,
 };
-use std::str::FromStr;
-
+use dotenvy::dotenv;
 // Settle the state on solana, called by sequencer
 pub async fn settle_state(proof: Hash) -> Result<String> {
+    dotenv().ok();
     let rpc_client = RpcClient::new_with_commitment(
         "https://api.devnet.solana.com".into(),
         CommitmentConfig::confirmed(),
     );
-
-    // Load keypair from the specified path
-    // let payer = signer::keypair::read_keypair_file("/home/dev/.solana/testkey.json")
+    let keypair = std::env::var("KEYPAIR1")?;
+    let bytes: Vec<u8> = serde_json::from_str(&keypair)?;
+    let payer = Keypair::try_from(&bytes[..])?;
+    // let payer = signer::keypair::read_keypair_file("/home/jvan/.solana/testkey.json")
     //     .map_err(|e| anyhow::anyhow!("Failed to read keypair file: {}", e))?;
-
-    let payer = signer::keypair::read_keypair_file("/home/dev/.solana/testkey.json")
-        .map_err(|e| anyhow::anyhow!("Failed to read keypair file: {}", e))?;
 
     // Create a dummy system transfer instruction (transfers 0 lamports to self)
     let settle_instruction = solana_sdk::system_instruction::transfer(
