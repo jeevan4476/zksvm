@@ -13,13 +13,6 @@ use std::collections::HashMap;
 use rollup_core::frontend::RollupTransaction;
 
 
-
-pub fn load_keypair_from_env(var_name: &str) -> Result<Keypair, Error> {
-    let keypair_str = std::env::var(var_name)?;
-    let keypair_bytes: Vec<u8> = serde_json::from_str(&keypair_str)?;
-    Ok(Keypair::try_from(&keypair_bytes[..])?)
-}
-
 /// Create a Solana transaction for testing/demonstration
 pub fn create_solana_transaction(
     from: &Keypair,

@@ -19,11 +19,9 @@ pub async fn settle_state(proof: Hash) -> Result<String> {
         "https://api.devnet.solana.com".into(),
         CommitmentConfig::confirmed(),
     );
-    let keypair = std::env::var("KEYPAIR1")?;
-    let bytes: Vec<u8> = serde_json::from_str(&keypair)?;
-    let payer = Keypair::try_from(&bytes[..])?;
-    // let payer = signer::keypair::read_keypair_file("/home/jvan/.solana/testkey.json")
-    //     .map_err(|e| anyhow::anyhow!("Failed to read keypair file: {}", e))?;
+    let path = std::env::var("KEYPAIR2")?;
+    let payer = signer::keypair::read_keypair_file(path)
+        .map_err(|e| anyhow::anyhow!("Failed to read keypair file: {}", e))?;
 
     // Create a dummy system transfer instruction (transfers 0 lamports to self)
     let settle_instruction = solana_sdk::system_instruction::transfer(
