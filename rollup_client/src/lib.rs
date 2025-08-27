@@ -4,10 +4,7 @@ use std::collections::HashMap;
 use solana_system_interface::instruction as system_instruction;
 use rollup_core::frontend::{RollupTransaction, TransactionWithHash};
 use solana_sdk::{
-    hash::Hash,
-    keccak,
-    signature::{Keypair, Signer},
-    transaction::Transaction,
+    hash::Hash, keccak, signature::{Keypair, Signer}, system_instruction::transfer, transaction::Transaction
 };
 
 /// List response (matches server's paginated JSON)
@@ -29,7 +26,7 @@ pub fn create_solana_transaction(
     amount: u64,
     recent_blockhash: Hash,
 ) -> Transaction {
-    let ix = system_instruction::transfer(&from.pubkey(), &to.pubkey(), amount);
+    let ix = transfer(&from.pubkey(), &to.pubkey(), amount);
     Transaction::new_signed_with_payer(&[ix], Some(&from.pubkey()), &[from], recent_blockhash)
 }
 

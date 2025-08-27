@@ -48,3 +48,4 @@ witness*.json
 ./onchain_verifier/.yarn
 ./onchain_verifier/.anchor
 ./onchain_verifier/test-ledger
+balances.json

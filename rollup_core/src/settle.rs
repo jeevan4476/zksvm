@@ -1,9 +1,10 @@
-use anyhow::Result;
+use anyhow::{anyhow,Result};
+use anchor_lang::{InstructionData, ToAccountMetas}; 
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::{
     hash::Hash,
     commitment_config::CommitmentConfig,
-    instruction::Instruction,
+    instruction::{AccountMeta,Instruction},
     pubkey::Pubkey,
     signature::Signer,
     signer,
@@ -12,10 +13,16 @@ use solana_sdk::{
 use solana_system_interface::instruction as system_instruction;
 use dotenvy::dotenv;
 use crossbeam::channel::{Receiver as CBReceiver, Sender as CBSender};
-use std::{fs, time::Duration};
+use std::{fs, str::FromStr, time::Duration};
 use tokio::time::sleep;
-
+use serde::Deserialize;
 use crate::rollupdb::{RollupDBMessage, UpdateProofStatusMessage, ProofStatus, ProofData};
+
+use onchain_verifier::{
+    accounts::VerifyGroth16 as VerifyAccounts, instruction::VerifyGroth16Proof as VerifyInstruction,
+    Groth16Proof, Groth16VerifyingKey, PublicInputs,
+};
+use num_bigint::BigUint;
 
 #[derive(Debug, Clone)]
 pub struct SettlementJob {
@@ -30,6 +37,20 @@ pub enum SettlementResult {
     Success(String), 
     Failed(String),  
     Retry,       
+}
+//temprary struct to deserialize the vk.json file
+#[derive(Clone, Deserialize, Debug)]
+pub struct JsonVerifyingKey {
+    #[serde(rename = "vk_alpha_1")]
+    pub alpha_g1: [String; 3],
+    #[serde(rename = "vk_beta_2")]
+    pub beta_g2: [[String; 2]; 3],
+    #[serde(rename = "vk_gamma_2")]
+    pub gamma_g2: [[String; 2]; 3],
+    #[serde(rename = "vk_delta_2")]
+    pub delta_g2: [[String; 2]; 3],
+    #[serde(rename = "IC")]
+    pub ic: Vec<[String; 3]>,
 }
 
 pub async fn settle_batch_with_proof(
@@ -70,122 +91,103 @@ async fn settle_with_proof(
         CommitmentConfig::confirmed(),
     );
     
+    
     let path = std::env::var("KEYPAIR2")?;
     let payer = signer::keypair::read_keypair_file(path)
         .map_err(|e| anyhow::anyhow!("Failed to read keypair file: {}", e))?;
 
-    // TODO: This is wehre we can integrate with our proof verifier program and replace with simulation
-    match simulate_verification(&proof_data).await {
-        Ok(verification_result) => {
-            if verification_result {
-                log::info!(" Proof verification successful for batch: {}", settlement_job.batch_id);
-                
-                // TODO: Create settlement transction by calling the proof verifier program
-                let settle_instruction = create_settlement_instruction(&payer.pubkey(), &proof_data)?;
-                
-                let recent_blockhash = rpc_client.get_latest_blockhash().await?;
-                let transaction = Transaction::new_signed_with_payer(
-                    &[settle_instruction],
-                    Some(&payer.pubkey()),
-                    &[&payer],
-                    recent_blockhash,
-                );
-                
-                match rpc_client.send_and_confirm_transaction(&transaction).await {
-                    Ok(signature) => {
-                        log::info!("Settlement transaction confirmed: {}", signature);
-                        
-                        // here we updte the proof status to 'verified'
-                        update_proof_status(
-                            &settlement_job.batch_id,
-                            ProofStatus::Verified,
-                            None,
-                            rollupdb_sender,
-                        )?;
-                        
-                        Ok(SettlementResult::Success(signature.to_string()))
-                    }
-                    Err(e) => {
-                        log::error!(" Settlement transaction failed for batch {}: {}", settlement_job.batch_id, e);
-                        
-                        // here we update proof status to 'failed'
-                        update_proof_status(
-                            &settlement_job.batch_id,
-                            ProofStatus::Failed,
-                            Some(format!("Transaction failed: {}", e)),
-                            rollupdb_sender,
-                        )?;
-                        
-                        Ok(SettlementResult::Failed(e.to_string()))
-                    }
-                }
-            } else {
-                log::error!(" Proof verification failed for batch: {}", settlement_job.batch_id);
-                
-                update_proof_status(
-                    &settlement_job.batch_id,
-                    ProofStatus::Failed,
-                    Some("Proof verification failed".to_string()),
-                    rollupdb_sender,
-                )?;
-                
-                Ok(SettlementResult::Failed("Proof verification failed".to_string()))
-            }
+    let vk_file  = fs::File::open("build/keys/verification_key_batch.json")?;
+    let json_vk:JsonVerifyingKey = serde_json::from_reader(std::io::BufReader::new(vk_file))?;
+
+    let verifying_key = convert_vk_to_onchain_format(&json_vk)?;
+    let proof = convert_proof_to_onchain_format(&proof_data)?;
+    
+    let public_input_file = fs::File::open("build/public_batch.json")?;
+    let public_input_str : Vec<String> = serde_json::from_reader(std::io::BufReader::new(public_input_file))?;
+    let public_inputs = convert_public_inputs_to_onchain_format(&public_input_str)?;
+
+    let ix = create_onchain_verifier_instruction(&payer.pubkey(), &settlement_job.batch_id, proof, public_inputs, verifying_key)?;
+
+    let recent_blockhash = rpc_client.get_latest_blockhash().await?;
+    let transaction = Transaction::new_signed_with_payer(
+        &[ix],
+        Some(&payer.pubkey()),
+        &[&payer],
+        recent_blockhash,
+    );
+
+     match rpc_client.send_and_confirm_transaction(&transaction).await {
+        Ok(signature) => {
+            log::info!("Settlement transaction confirmed: {}", signature);
+            update_proof_status(&settlement_job.batch_id, ProofStatus::Verified, None, rollupdb_sender)?;
+            Ok(SettlementResult::Success(signature.to_string()))
         }
         Err(e) => {
-            log::error!(" Error during proof verification for batch {}: {}", settlement_job.batch_id, e);
-            
+            log::error!(
+                "Settlement transaction failed for batch {}: {}",
+                settlement_job.batch_id,
+                e
+            );
             update_proof_status(
                 &settlement_job.batch_id,
                 ProofStatus::Failed,
-                Some(format!("Verification error: {}", e)),
+                Some(e.to_string()),
                 rollupdb_sender,
             )?;
-            
-            Ok(SettlementResult::Retry) 
+            Ok(SettlementResult::Failed(e.to_string()))
         }
     }
 }
 
-async fn simulate_verification(proof_data: &ProofData) -> Result<bool> {
-    log::info!("Simulating onchain proof verification...");
+// async fn check_valid(settlement_job: SettlementJob,proof_data: &ProofData) -> Result<SettlementResult> {
+//     log::info!("Simulating onchain proof verification...");
     
-    sleep(Duration::from_millis(500)).await;
+//     sleep(Duration::from_millis(500)).await;
     
-    // here we are checkng if the proof data looks valid
-    let is_valid = !proof_data.pi_a[0].is_empty() 
-                   && !proof_data.pi_b[0][0].is_empty() 
-                   && !proof_data.pi_c[0].is_empty()
-                   && proof_data.protocol == "groth16"
-                   && proof_data.curve == "bn128";
+//     // here we are checkng if the proof data looks valid
+//     let is_valid = !proof_data.pi_a[0].is_empty() 
+//                    && !proof_data.pi_b[0][0].is_empty() 
+//                    && !proof_data.pi_c[0].is_empty()
+//                    && proof_data.protocol == "groth16"
+//                    && proof_data.curve == "bn128";
     
-    log::info!("Verification result: {}", if is_valid { "VALID" } else { "INVALID" });
-    Ok(is_valid)
-}
+//     log::info!("Verification result: {}", if is_valid { "VALID" } else { "INVALID" });
+//     Ok(SettlementResult::Failed("invalid".to_string()))
+// }
 
-fn create_settlement_instruction(payer: &Pubkey, proof_data: &ProofData) -> Result<Instruction> {
-    log::info!("Creating settlement instruction with proof data");
-    
-    // TODO: call proof verifier program
-    let proof_hash = format!("proof_{}_{}", 
-                            &proof_data.pi_a[0][..8], 
-                            &proof_data.pi_c[0][..8]);
-    
-    // we are still using system transfer but with proof metadata
-    Ok(system_instruction::transfer(
-        payer,
-        payer, 
-        1, 
-    ))
-    
-    // TODO: When we call our proof verifier program, we would replace the system transfer above with:
-    // Ok(Instruction {
-    //     program_id: PROOF_VERIFIER_PROGRAM_ID,
-    //     accounts: vec![
-    //         AccountMeta::new(*payer, true),
-    //     ],
-    //     data: serialize_proof_for_onchain_verification(proof_data)?,
-    // })
+
+
+fn create_onchain_verifier_instruction(
+    payer: &Pubkey,
+    batch_id: &str,
+    proof: Groth16Proof,
+    public_inputs: PublicInputs,
+    verifying_key: Groth16VerifyingKey,
+) -> Result<Instruction> {
+    let program_id = Pubkey::from_str("Aa3rXCBoxPVZ537nqccEiVsLBoZ2G7gdfNjypM9wP8Yi")?;
+    let (proof_account_pda, _) = Pubkey::find_program_address(
+        &[b"groth16_proof", payer.as_ref(), batch_id.as_bytes()],
+        &program_id,
+    );
+
+    let instruction_args = VerifyInstruction {
+        proof_id: batch_id.to_string(),
+        proof,
+        public_inputs,
+        verifying_key,
+    };
+
+    let accounts = VerifyAccounts {
+        authority: *payer,
+        proof_account: proof_account_pda,
+        system_program: solana_sdk::system_program::id(),
+    };
+
+    Ok(Instruction {
+        program_id,
+        accounts: accounts.to_account_metas(None),
+        data: instruction_args.data(),
+    })
 }
 
 // Settlement for when no proof data is available
@@ -259,21 +261,9 @@ fn update_proof_status(
         new_status: status,
         error_message,
     };
-    
     rollupdb_sender.send(RollupDBMessage {
-        lock_accounts: None,
-        add_processed_transaction: None,
-        add_new_data: None,
-        frontend_get_tx: None,
-        add_settle_proof: None,
-        store_batch_proof: None,
         update_proof_status: Some(update_message),
-        get_proof_by_batch_id: None,
-        get_unsettled_proofs: None,
-        retry_failed_proofs: None,
-        list_offset: None,        
-        list_limit: None,
-        trigger_retry_cycle: None,
+        ..Default::default()
     })?;
     
     Ok(())
@@ -307,4 +297,92 @@ pub async fn run_settlement_worker(
     }
     
     Ok(())
+}
+
+impl Default for RollupDBMessage {
+    fn default() -> Self {
+        RollupDBMessage {
+            lock_accounts: None,
+            add_processed_transaction: None,
+            frontend_get_tx: None,
+            list_offset: None,
+            list_limit: None,
+            add_settle_proof: None,
+            add_new_data: None,
+            store_batch_proof: None,
+            update_proof_status: None,
+            get_proof_by_batch_id: None,
+            get_unsettled_proofs: None,
+            retry_failed_proofs: None,
+            trigger_retry_cycle:None
+        }
+    }
+}
+
+//helper functions
+
+fn convert_public_inputs_to_onchain_format(inputs: &[String]) -> Result<PublicInputs> {
+    let inputs_bytes: Result<Vec<[u8; 32]>> = inputs
+        .iter()
+        .map(|s| biguint_from_str(s).and_then(biguint_to_32_bytes))
+        .collect();
+
+    Ok(PublicInputs {
+        inputs: inputs_bytes?,
+    })
+}
+
+fn convert_proof_to_onchain_format(proof_data: &ProofData) -> Result<Groth16Proof> {
+    Ok(Groth16Proof {
+        pi_a: g1_from_str_array(&proof_data.pi_a)?,
+        pi_b: g2_from_str_array(&proof_data.pi_b)?,
+        pi_c: g1_from_str_array(&proof_data.pi_c)?,
+    })
+}
+
+fn convert_vk_to_onchain_format(json_vk: &JsonVerifyingKey) -> Result<Groth16VerifyingKey> {
+    let ic_onchain: Result<Vec<[u8; 64]>> = json_vk.ic.iter().map(g1_from_str_array).collect();
+    Ok(Groth16VerifyingKey {
+        alpha_g1: g1_from_str_array(&json_vk.alpha_g1)?,
+        beta_g2: g2_from_str_array(&json_vk.beta_g2)?,
+        gamma_g2: g2_from_str_array(&json_vk.gamma_g2)?,
+        delta_g2: g2_from_str_array(&json_vk.delta_g2)?,
+        ic: ic_onchain?,
+    })
+}
+
+fn g1_from_str_array(arr: &[String; 3]) -> Result<[u8; 64]> {
+    let mut bytes = [0u8; 64];
+    let x = biguint_to_32_bytes(biguint_from_str(&arr[0])?)?;
+    let y = biguint_to_32_bytes(biguint_from_str(&arr[1])?)?;
+    bytes[..32].copy_from_slice(&x);
+    bytes[32..].copy_from_slice(&y);
+    Ok(bytes)
+}
+
+fn g2_from_str_array(arr: &[[String; 2]; 3]) -> Result<[u8; 128]> {
+    let mut bytes = [0u8; 128];
+    let x_c1 = biguint_to_32_bytes(biguint_from_str(&arr[0][0])?)?;
+    let x_c0 = biguint_to_32_bytes(biguint_from_str(&arr[0][1])?)?;
+    let y_c1 = biguint_to_32_bytes(biguint_from_str(&arr[1][0])?)?;
+    let y_c0 = biguint_to_32_bytes(biguint_from_str(&arr[1][1])?)?;
+    bytes[..32].copy_from_slice(&x_c0);
+    bytes[32..64].copy_from_slice(&x_c1);
+    bytes[64..96].copy_from_slice(&y_c0);
+    bytes[96..].copy_from_slice(&y_c1);
+    Ok(bytes)
+}
+
+fn biguint_from_str(s: &str) -> Result<BigUint> {
+    s.parse::<BigUint>().map_err(|e| anyhow!(e))
+}
+
+fn biguint_to_32_bytes(val: BigUint) -> Result<[u8; 32]> {
+    let mut bytes = [0u8; 32];
+    let val_bytes = val.to_bytes_be();
+    if val_bytes.len() > 32 {
+        return Err(anyhow!("Number too large for 32 bytes"));
+    }
+    bytes[(32 - val_bytes.len())..].copy_from_slice(&val_bytes);
+    Ok(bytes)
 }

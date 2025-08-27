@@ -28,3 +28,6 @@ solana-sdk-ids = "2.2.1"
 solana-system-interface = "1.0.0"
 dotenvy = "0.15"
 tokio-util = "0.7"
+onchain_verifier = {path = "../onchain_verifier/programs/onchain_verifier"}
+num-bigint = "0.4.6"
+anchor-lang = "0.31.1"
